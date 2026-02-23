@@ -1,0 +1,186 @@
+<div class="header">
+  <h1>QuickBooks Dimensions - Ruby</h1>
+  <p class="subtle">Multi-step workflow: Connect → Load Dimensions → Create Invoice → Logout</p>
+</div>
+
+<div class="card <%= @authenticated ? 'card-completed' : '' %>">
+  <h2 class="section-title">Step 1: Connect to QuickBooks</h2>
+  <% if @authenticated %>
+    <span class="btn btn-outline" aria-disabled="true">Connected</span>
+  <% else %>
+    <a class="btn btn-primary" href="/qbo-login">Connect to QuickBooks</a>
+  <% end %>
+</div>
+
+<div class="card <%= (@authenticated && @dimensions_enabled) ? '' : 'card-disabled' %>">
+  <h2 class="section-title">Step 2: Fetch Dimensions</h2>
+  <form action="/datafetch" method="post">
+    <%= hidden_field_tag :authenticity_token, form_authenticity_token %>
+    <button type="submit" class="btn" <%= 'disabled aria-disabled="true"' unless (@authenticated && @dimensions_enabled) %>>Fetch Dimensions</button>
+  </form>
+  <div class="grid grid-2" style="margin-top:12px;">
+    <div>
+      <h3 class="section-title">Dimensions</h3>
+      <% if !@dimensions_enabled && @authenticated %>
+        <p class="subtle">Dimensions is not enabled in QuickBooks for this company. Please enable Dimensions in QBO to use this step.</p>
+      <% elsif @dimensions_fetched && @dimensions.any? %>
+        <ul class="list">
+          <% @dimensions.each do |name| %>
+            <li><%= name %></li>
+          <% end %>
+        </ul>
+      <% else %>
+        <p class="subtle"><%= (@authenticated && @dimensions_enabled) ? 'Click Fetch Dimensions to load available dimensions.' : 'No dimensions loaded.' %></p>
+      <% end %>
+    </div>
+  </div>
+</div>
+
+<div class="card <%= (@authenticated && @dimensions_fetched && @dimensions.any?) ? '' : 'card-disabled' %>">
+  <h2 class="section-title">Step 3: Create an Invoice</h2>
+  <p class="subtle">Requires connection and fetched dimensions.</p>
+
+  <% if @authenticated && @dimensions_fetched && @dimensions.any? %>
+    <form action="/create_invoice" method="post">
+      <%= hidden_field_tag :authenticity_token, form_authenticity_token %>
+      <div class="grid grid-2">
+        <div>
+          <label class="field-label">Amount</label>
+          <input type="number" name="amount" step="0.01" min="0" class="input" placeholder="100.00" required>
+        </div>
+        <div>
+          <label class="field-label">Customer</label>
+          <select name="customer_id" class="input" required>
+            <option value="">Select customer</option>
+            <% (@customers || []).each do |c| %>
+              <option value="<%= c.dig('Id') || c.dig('Id'.downcase) || c['id'] %>"><%= c.dig('DisplayName') || c['DisplayName'] || c['FullyQualifiedName'] || c['Name'] || c['name'] %></option>
+            <% end %>
+          </select>
+        </div>
+        <div>
+          <label class="field-label">Item</label>
+          <select id="itemSelect" name="item_id" class="input" required>
+            <option value="">Select item</option>
+            <% (@items || []).each do |it| %>
+              <% item_id = it.dig('Id') || it['id'] %>
+              <% item_name = it.dig('Name') || it['name'] %>
+              <option value="<%= item_id %>" data-name="<%= item_name %>"><%= item_name %></option>
+            <% end %>
+          </select>
+          <input type="hidden" id="itemName" name="item_name" value="">
+        </div>
+        <div>
+          <label class="field-label">Dimension</label>
+          <select id="dimensionDef" name="custom_dimension_id" class="input" required>
+            <option value="">Select dimension</option>
+            <% @dimensions_map.each do |def_id, def_name| %>
+              <option value="<%= def_id %>"><%= def_name %></option>
+            <% end %>
+          </select>
+        </div>
+        <div>
+          <label class="field-label">Dimension Value</label>
+          <select id="dimensionVal" name="custom_dimension_value" class="input" required disabled>
+            <option value="">Select value</option>
+          </select>
+          <p id="dimValuesHint" class="subtle" style="margin-top:6px;"></p>
+          <input type="hidden" id="customDimensionName" name="custom_dimension_name" value="">
+          <input type="hidden" id="customDimensionValueLabel" name="custom_dimension_value_label" value="">
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <button type="submit" class="btn">Create Invoice</button>
+        <% if @invoice_success && @invoice_deep_link.present? %>
+          <a class="btn btn-outline" href="<%= @invoice_deep_link %>" target="_blank" rel="noopener">View in QuickBooks</a>
+        <% else %>
+          <a class="btn btn-outline" aria-disabled="true" tabindex="-1">View in QuickBooks</a>
+        <% end %>
+      </div>
+    </form>
+  <% else %>
+    <p class="subtle">Connect and fetch dimensions to enable invoice creation.</p>
+  <% end %>
+</div>
+
+<div class="card <%= @authenticated ? '' : 'card-disabled' %>">
+  <h2 class="section-title">Step 4: Logout</h2>
+  <a class="btn" href="/logout" <%= 'disabled aria-disabled="true"' unless @authenticated %>>Logout</a>
+  <% unless @authenticated %>
+    <p class="subtle">You are not logged in.</p>
+  <% end %>
+</div>
+
+<script>
+  (function() {
+    var itemSelect = document.getElementById('itemSelect');
+    var itemName = document.getElementById('itemName');
+    if (itemSelect && itemName) {
+      itemSelect.addEventListener('change', function() {
+        var opt = itemSelect.options[itemSelect.selectedIndex];
+        itemName.value = opt ? (opt.getAttribute('data-name') || '') : '';
+      });
+    }
+
+    var defSel = document.getElementById('dimensionDef');
+    var valSel = document.getElementById('dimensionVal');
+    var hint = document.getElementById('dimValuesHint');
+    var invoiceForm = document.querySelector('form[action="/create_invoice"]');
+    var cdName = document.getElementById('customDimensionName');
+    var cdValLabel = document.getElementById('customDimensionValueLabel');
+    function clearValues() {
+      if (!valSel) return;
+      valSel.innerHTML = '<option value="">Select value</option>';
+      valSel.disabled = true;
+    }
+    if (defSel && valSel) {
+      defSel.addEventListener('change', function() {
+        var defId = defSel.value;
+        if (cdName) {
+          var defOpt = defSel.options[defSel.selectedIndex];
+          cdName.value = defOpt ? (defOpt.textContent || '') : '';
+        }
+        clearValues();
+        if (!defId) { if (hint) hint.textContent = ''; return; }
+        if (hint) hint.textContent = 'Loading values…';
+        fetch('/get_dimension_values/' + encodeURIComponent(defId))
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            var values = (data && data.values) || [];
+            values.forEach(function(v) {
+              var opt = document.createElement('option');
+              opt.value = v.id; // submit value id
+              opt.textContent = v.fullyQualifiedLabel || v.label || v.id;
+              valSel.appendChild(opt);
+            });
+            valSel.disabled = values.length === 0;
+            if (hint) hint.textContent = values.length ? ('Loaded ' + values.length + ' values') : 'No active values';
+          })
+          .catch(function(err) {
+            if (hint) hint.textContent = 'Failed to load values';
+            console.error('Dimension values fetch error', err);
+          });
+      });
+
+      valSel.addEventListener('change', function() {
+        if (cdValLabel) {
+          var valOpt = valSel.options[valSel.selectedIndex];
+          cdValLabel.value = valOpt ? (valOpt.textContent || '') : '';
+        }
+      });
+    }
+
+    // Prevent invoice submission without a selected Dimension Value
+    if (invoiceForm) {
+      invoiceForm.addEventListener('submit', function(e) {
+        if (!valSel || valSel.disabled || !valSel.value) {
+          e.preventDefault();
+          if (hint) {
+            hint.textContent = 'Please choose a Dimension and then select a Dimension Value.';
+          } else {
+            alert('Please choose a Dimension and then select a Dimension Value.');
+          }
+        }
+      });
+    }
+  })();
+</script>
